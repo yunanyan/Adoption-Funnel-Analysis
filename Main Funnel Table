@@ -1,0 +1,232 @@
+CREATE OR REPLACE TABLE app_engage.app_engage_temp.funnel AS(
+WTIH base AS (
+    SELECT
+        pe.merchant_token
+        ,pe.product_name
+        ,pe.event_desc
+        ,pe.event_date
+    FROM app_bi.hexagon.product_events pe 
+    WHERE true    
+        AND pe.product_name = 'Register POS'
+        AND pe.event_type = 'bottom_of_funnel'
+), 
+
+register_tx AS (
+    SELECT
+        vdps.merchant_token
+        ,vdps.report_date
+        ,vdps.transaction_count AS transtion_tx 
+        ,vdps.product_name AS product_name 
+        ,SUM(vdps.transaction_count) OVER (PARTITION BY vdps.merchant_token ORDER BY vdps.report_date) AS register_tx_running
+    FROM app_bi.hexagon.vagg_daily_processing_summary vdps 
+    JOIN base b 
+        ON b.merchant_token = vdps.merchant_token
+        AND b.product_name = vdps.product_name 
+    WHERE true 
+        AND vdps.report_date >= b.event_date
+), 
+
+-- Filter engagement campaigns for SPOS only 
+campaigns AS(
+SELECT
+    aep.natural_key_contact,
+    aep.natural_key_campaign,
+    aep.first_impression_at,
+    aep.first_open_at,
+    dtc.product_name,
+    dtc.lifecycle_stage,
+    dtc.message_type,
+    dtc.campaign_name,
+    dtc.channel,
+    dtc.message_url,
+    dtc.message_body,
+    dtc.campaign_id    
+FROM app_engage.app_engage_etl.all_engagement_pivoted aep
+JOIN app_engage.app_engage_etl.dim_template_campaign dtc 
+  ON aep.natural_key_campaign = dtc.campaign_id
+WHERE dtc.product_name = 'Register POS'
+  AND dtc.lifecycle_stage = 'Engagement' 
+),
+
+-- define adoption
+adoption AS(
+SELECT
+     r.merchant_token AS merchant_token 
+    ,r.product_name
+    , 'Processing' AS product_category
+    , 'fifth_processed_transaction' AS milestone_event_name
+    , MIN(r.report_date) AS milestone_event_date
+FROM register_tx r 
+WHERE true 
+  AND r.register_tx_running >= 5
+GROUP BY 1,2,3,4
+),
+
+-- define sub-milestones
+second_tx AS (
+SELECT
+     r.merchant_token AS merchant_token 
+    ,r.product_name
+    , 'Processing' AS product_category
+    , 'second_processed_transaction' AS second_sub_milestone_event_name
+    , MIN(r.report_date) AS second_sub_milestone_event_date
+FROM register_tx r 
+WHERE true 
+  AND r.register_tx_running >= 2
+GROUP BY 1,2,3,4
+),
+
+-- define sub-milestones
+third_tx AS (
+SELECT
+     r.merchant_token AS merchant_token 
+    ,r.product_name
+    , 'Processing' AS product_category
+    , 'third_processed_transaction' AS third_sub_milestone_event_name
+    , MIN(r.report_date) AS third_sub_milestone_event_date
+FROM register_tx r 
+WHERE true 
+  AND r.register_tx_running >= 3
+GROUP BY 1,2,3,4
+),
+
+-- define sub-milestones
+fourth_tx as (
+SELECT
+     r.merchant_token AS merchant_token 
+    ,r.product_name
+    , 'Processing' AS product_category
+    , 'fourth_processed_transaction' AS fourth_sub_milestone_event_name
+    , MIN(r.report_date) AS fourth_sub_milestone_event_date
+FROM register_tx r 
+WHERE true 
+  AND r.register_tx_running >= 4
+GROUP BY 1,2,3,4
+),
+
+
+-- Left join BoF sellers and those who hit second sub-milestone 
+bof_2 AS(
+SELECT
+    merchant_token,
+    ABS(DATEDIFF(day,t.second_sub_milestone_event_date,t.EVENT_DATE)) AS bof_2_hit_time,
+    COUNT(DISTINCT c.natural_key_campaign) AS bof_2_number_of_received_engagement,
+    COUNT(DISTINCT c.first_open_at) AS bof_2_number_of_openned_engagement,
+    MIN(second_sub_milestone_event_date) AS second_sub_milestone_event_date,
+    MIN(t.event_date) AS event_date
+FROM
+(SELECT 
+    pe.*,
+    st.second_sub_milestone_event_name,
+    st.second_sub_milestone_event_date  
+FROM app_bi.hexagon.product_events pe 
+LEFT JOIN second_tx st 
+  ON pe.merchant_token = st.merchant_token
+  AND TO_DATE(st.second_sub_milestone_event_date) <= DATEADD(day, 60,TO_DATE(pe.EVENT_DATE))
+WHERE pe.product_name = 'Register POS'
+  AND year(pe.EVENT_DATE) in (2022)
+  AND EVENT_TYPE = 'bottom_of_funnel')t
+LEFT JOIN campaigns c 
+  ON t.merchant_token = c.natural_key_contact
+  AND c.first_impression_at >= t.EVENT_DATE
+  AND c.first_impression_at <= iff(t.second_sub_milestone_event_date is null, DATEADD(day, 10,TO_DATE(t.EVENT_DATE)),t.second_sub_milestone_event_date)
+GROUP BY 1,2),
+
+-- Left join those who hit the third sub-milestone
+bof_2_3 AS(
+SELECT
+    t.merchant_token,
+    t.bof_2_hit_time,
+    t.bof_2_number_of_received_engagement,
+    t.bof_2_number_of_openned_engagement,
+    t.second_sub_milestone_event_date,
+    t.event_date,
+    ABS(DATEDIFF(day,t.third_sub_milestone_event_date,t.second_sub_milestone_event_date)) AS bof_3_hit_time,
+    COUNT(DISTINCT c.natural_key_campaign) AS bof_3_number_of_received_engagement,
+    COUNT(DISTINCT c.first_open_at) AS bof_3_number_of_openned_engagement,
+    MIN(third_sub_milestone_event_date) AS third_sub_milestone_event_date
+FROM
+(SELECT 
+    b2.*,
+    tt.third_sub_milestone_event_date    
+From bof_2 b2 
+LEFT JOIN third_tx tt 
+  ON b2.merchant_token = tt.merchant_token
+  AND TO_DATE(tt.third_sub_milestone_event_date) <= DATEADD(day, 60,TO_DATE(b2.EVENT_DATE))
+)t
+LEFT JOIN campaigns c 
+  ON t.merchant_token = c.natural_key_contact
+  AND c.first_impression_at >= t.second_sub_milestone_event_date
+  AND c.first_impression_at <= iff(t.third_sub_milestone_event_date is null, DATEADD(day, 10,TO_DATE(t.second_sub_milestone_event_date)),t.third_sub_milestone_event_date)
+GROUP BY 1,2,3,4,5,6,7
+),
+
+-- Left join those who hit the fourth sub-milestone
+bof_2_3_4 AS(
+SELECT
+    t.merchant_token,
+    t.event_date,
+    t.second_sub_milestone_event_date,
+    t.bof_2_hit_time,
+    t.bof_2_number_of_received_engagement,
+    t.bof_2_number_of_openned_engagement,
+    t.third_sub_milestone_event_date,
+    t.bof_3_hit_time,
+    t.bof_3_number_of_received_engagement,
+    t.bof_3_number_of_openned_engagement,
+    MIN(fourth_sub_milestone_event_date) AS fourth_sub_milestone_event_date,
+    MIN(ABS(DATEDIFF(day,t.fourth_sub_milestone_event_date,t.third_sub_milestone_event_date))) AS bof_4_hit_time,
+    COUNT(DISTINCT c.natural_key_campaign) AS bof_4_number_of_received_engagement,
+    COUNT(DISTINCT c.first_open_at) AS bof_4_number_of_openned_engagement
+FROM
+(SELECT 
+    b23.*,
+    tt.fourth_sub_milestone_event_date    
+From bof_2_3 b23 
+LEFT JOIN fourth_tx tt 
+  ON b23.merchant_token = tt.merchant_token
+  AND TO_DATE(tt.fourth_sub_milestone_event_date) <= DATEADD(day, 60,TO_DATE(b23.EVENT_DATE))
+)t
+LEFT JOIN campaigns c 
+  ON t.merchant_token = c.natural_key_contact
+  AND c.first_impression_at >= t.third_sub_milestone_event_date
+  AND c.first_impression_at <= iff(t.fourth_sub_milestone_event_date is null, DATEADD(day, 10,TO_DATE(t.third_sub_milestone_event_date)),t.fourth_sub_milestone_event_date)
+GROUP BY 1,2,3,4,5,6,7,8,9,10
+),
+
+-- Left join those who hit the adoption milestone
+bof_adopt AS(
+SELECT
+    t.merchant_token,
+    t.event_date,
+    t.second_sub_milestone_event_date,
+    t.bof_2_hit_time,
+    t.bof_2_number_of_received_engagement,
+    t.bof_2_number_of_openned_engagement,
+    t.third_sub_milestone_event_date,
+    t.bof_3_hit_time,
+    t.bof_3_number_of_received_engagement,
+    t.bof_3_number_of_openned_engagement,
+    t.fourth_sub_milestone_event_date,
+    t.bof_4_hit_time,
+    t.bof_4_number_of_received_engagement,
+    t.bof_4_number_of_openned_engagement,
+    MIN(milestone_event_date) AS fifth_sub_milestone_event_date,
+    MIN(ABS(DATEDIFF(day,t.milestone_event_date,t.fourth_sub_milestone_event_date))) AS bof_5_hit_time,
+    COUNT(DISTINCT c.natural_key_campaign) as bof_5_number_of_received_engagement,
+    COUNT(DISTINCT c.first_open_at) as bof_5_number_of_openned_engagement
+FROM
+(SELECT 
+    b234.*,
+    tt.milestone_event_date    
+From bof_2_3_4 b234 
+LEFT JOIN adoption tt 
+  ON b234.merchant_token = tt.merchant_token
+  AND TO_DATE(tt.milestone_event_date) <= DATEADD(day, 60,TO_DATE(b234.EVENT_DATE))
+)t
+LEFT JOIN campaigns c 
+  ON t.merchant_token = c.natural_key_contact
+  AND c.first_impression_at >= t.fourth_sub_milestone_event_date
+  AND c.first_impression_at <= iff(t.milestone_event_date is null, DATEADD(day, 10,TO_DATE(t.fourth_sub_milestone_event_date)),t.milestone_event_date)
+GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14
+)
