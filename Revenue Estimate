@@ -1,0 +1,37 @@
+-- Get all transactions for SPOS
+WITH SPOS AS (
+SELECT
+    merchant_token,
+    report_date,
+    product_name,
+    adjusted_revenue_base_unit
+FROM app_bi.hexagon.vagg_daily_processing_summary 
+WHERE product_name = 'Register POS'
+),
+
+-- LEFT JOIN Main Funnel Table with Transactions which occured after Adoption
+rev AS(
+SELECT
+    f.merchant_token, 
+    merchant_segment,
+    SPOS.report_date,
+    SPOS.adjusted_revenue_base_unit
+FROM app_engage.app_engage_temp.funnel f
+LEFT JOIN app_bi.hexagon.vdim_merchant_gpv_segment s 
+  ON f.merchant_token = s.merchant_token 
+  AND f.event_date BETWEEN effective_begin AND effective_end
+LEFT JOIN SPOS  
+  ON f.merchant_token = SPOS.merchant_token
+  AND SPOS.report_date >= f.fifth_sub_milestone_event_date 
+  AND SPOS.report_date <= DATEADD(day, 365,TO_DATE(f.fifth_sub_milestone_event_date))
+)
+
+-- Calculate average revenue per seller for each segment
+SELECT
+    COUNT(DISTINCT merchant_token),
+    SUM(adjusted_revenue_base_unit/100),
+    SUM(adjusted_revenue_base_unit/100)/COUNT(DISTINCT merchant_token) AS avg_per_seg,
+    merchant_segment
+FROM rev
+WHERE report_date IS NOT null
+GROUP BY merchant_segment
