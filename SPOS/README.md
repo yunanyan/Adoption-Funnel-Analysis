@@ -10,3 +10,5 @@ This the collection of SQL codes used in SPOS Adoption Funnel Analysis.
   3. Campaign Investigate left joins the main funnel table with campaign details to determine which campaigns have reached more sellers during their BoF and adoption
 
   4. Revenue Estimate computes the average revenue per seller for each GPV segment.
+
+  5. Visualization has all the PYTHON code for plotting and visualizing data.
