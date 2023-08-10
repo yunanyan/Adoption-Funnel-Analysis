@@ -1,0 +1,41 @@
+WITH campaign AS(
+SELECT 
+    aep.natural_key_contact,
+    aep.natural_key_campaign,
+    aep.first_impression_at,
+    aep.first_open_at,
+    dtc.product_name,
+    dtc.lifecycle_stage,
+    dtc.message_type,
+    dtc.campaign_name,
+    dtc.channel,
+    dtc.message_url,
+    dtc.message_body,
+    dtc.campaign_id    
+FROM app_engage.app_engage_etl.all_engagement_pivoted aep
+JOIN app_engage.app_engage_etl.dim_template_campaign dtc 
+  ON aep.natural_key_campaign = dtc.campaign_id
+WHERE dtc.product_name = 'Loyalty'
+  AND dtc.lifecycle_stage = 'Engagement'  
+)
+
+
+SELECT
+    campaign_name, 
+    message_type,
+    message_body,
+    message_url,
+    channel,
+    campaign_id,
+    COUNT(DISTINCT natural_key_contact) AS num_sellers
+FROM
+(SELECT
+    * 
+FROM funnel f
+LEFT JOIN campaign c
+  ON c.natural_key_contact = f.merchant_token
+  AND c.first_impression_at >= f.EVENT_DATE
+  AND c.first_impression_at <= iff(f.third_sub_milestone_event_date IS NULL, DATEADD(day, 60,TO_DATE(f.EVENT_DATE)),f.third_sub_milestone_event_date)
+)t
+GROUP BY 1,2,3,4,5,6
+;
