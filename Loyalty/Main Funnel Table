@@ -1,0 +1,182 @@
+CREATE OR REPLACE TABLE app_engage.app_engage_temp.loyalty_funnel AS(
+WITH base AS (
+SELECT 
+    DISTINCT pe.merchant_token
+    , product_name
+    , event_date as bof_date 
+    , event_desc 
+FROM app_bi.hexagon.product_events pe 
+WHERE product_name = 'Loyalty'
+  AND event_type = 'bottom_of_funnel'
+),
+  
+ loyalty_visits_post_bof AS 
+(SELECT 
+    dvs.payment_date_pst
+    , dvs.best_available_merchant_token
+    , dvs.loyalty_first_time_visits + dvs.loyalty_repeat_visits AS total_loyalty_visits
+FROM base
+LEFT JOIN app_balance.app.vol_merchant_daily_visits_sales dvs
+  ON base.merchant_token = dvs.best_available_merchant_token
+WHERE dvs.payment_date_pst >= base.bof_date
+),
+
+running_sum_of_loyalty_visits_post_bof AS 
+(SELECT 
+    payment_date_pst
+    , best_available_merchant_token
+    , total_loyalty_visits
+    , SUM(total_loyalty_visits) OVER (PARTITION BY best_available_merchant_token ORDER BY payment_date_pst) AS running_total_of_loyalty_visits
+FROM loyalty_visits_post_bof
+),
+
+adoption AS(                                           
+SELECT 
+    best_available_merchant_token AS merchant_token
+    , 'Loyalty' AS product_name
+    , 'SaaS' AS product_category
+    , 'third_loyalty_visit' AS milestone_event_name
+    , MIN(payment_date_pst) AS milestone_event_date
+FROM running_sum_of_loyalty_visits_post_bof
+WHERE running_total_of_loyalty_visits >= 3
+GROUP BY 1
+ORDER BY 2 ASC
+),
+
+first_use AS(
+SELECT 
+    best_available_merchant_token as merchant_token
+    , 'Loyalty' AS product_name
+    , 'SaaS' AS product_category
+    , 'first_loyalty_visit' AS first_sub_milestone_event_name
+    , MIN(payment_date_pst) AS first_sub_milestone_event_date
+FROM running_sum_of_loyalty_visits_post_bof
+WHERE running_total_of_loyalty_visits >= 1
+GROUP BY 1
+ORDER BY 2 ASC
+),
+
+second_use AS(
+SELECT 
+    best_available_merchant_token AS merchant_token
+    , 'Loyalty' AS product_name
+    , 'SaaS' AS product_category
+    , 'second_loyalty_visit' AS second_sub_milestone_event_name
+    , MIN(payment_date_pst) AS second_sub_milestone_event_date
+FROM running_sum_of_loyalty_visits_post_bof
+WHERE running_total_of_loyalty_visits >= 2
+GROUP BY 1
+ORDER BY 2 ASC
+),
+
+campaigns AS(
+SELECT 
+    aep.natural_key_contact,
+    aep.natural_key_campaign,
+    aep.first_impression_at,
+    aep.first_open_at,
+    dtc.product_name,
+    dtc.lifecycle_stage,
+    dtc.message_type,
+    dtc.campaign_name,
+    dtc.channel,
+    dtc.message_url,
+    dtc.message_body,
+    dtc.campaign_id    
+FROM app_engage.app_engage_etl.all_engagement_pivoted aep
+JOIN app_engage.app_engage_etl.dim_template_campaign dtc 
+  ON aep.natural_key_campaign = dtc.campaign_id
+WHERE dtc.product_name = 'Loyalty'
+  AND dtc.lifecycle_stage = 'Engagement' 
+),
+
+
+bof_1 AS(
+SELECT
+    merchant_token,
+    ABS(DATEDIFF(DAY,t.first_sub_milestone_event_date,t.EVENT_DATE)) AS bof_1_hit_time,
+    COUNT(DISTINCT c.natural_key_campaign) AS bof_1_number_of_received_engagement,
+    COUNT(DISTINCT c.first_open_at) AS bof_1_number_of_openned_engagement,
+    MIN(first_sub_milestone_event_date) AS first_sub_milestone_event_date,
+    MIN(t.event_date) AS event_date
+FROM
+(SELECT 
+    pe.*,
+    st.first_sub_milestone_event_name,
+    st.first_sub_milestone_event_date  
+FROM app_bi.hexagon.product_events pe 
+LEFT JOIN first_use st 
+  ON pe.merchant_token = st.merchant_token
+  AND TO_DATE(st.first_sub_milestone_event_date) <= DATEADD(day, 60,TO_DATE(pe.EVENT_DATE))
+WHERE pe.product_name = 'Loyalty'
+  AND year(pe.EVENT_DATE) IN (2022)
+  AND EVENT_TYPE = 'bottom_of_funnel')t
+LEFT JOIN campaigns c 
+  ON t.merchant_token = c.natural_key_contact
+  AND c.first_impression_at >= t.EVENT_DATE
+  AND c.first_impression_at <= iff(t.first_sub_milestone_event_date IS NULL, DATEADD(day, 10,TO_DATE(t.EVENT_DATE)),t.first_sub_milestone_event_date)
+GROUP BY 1,2),
+
+
+bof_1_2 AS(
+SELECT
+    t.merchant_token,
+    t.bof_1_hit_time,
+    t.bof_1_number_of_received_engagement,
+    t.bof_1_number_of_openned_engagement,
+    t.first_sub_milestone_event_date,
+    t.event_date,
+    ABS(DATEDIFF(day,t.second_sub_milestone_event_date,t.first_sub_milestone_event_date)) AS bof_2_hit_time,
+    COUNT(DISTINCT c.natural_key_campaign) AS bof_2_number_of_received_engagement,
+    COUNT(DISTINCT c.first_open_at) AS bof_2_number_of_openned_engagement,
+    MIN(second_sub_milestone_event_date) AS second_sub_milestone_event_date
+FROM
+(SELECT 
+    b2.*,
+    tt.second_sub_milestone_event_date    
+From bof_1 b2 
+LEFT JOIN second_use tt 
+  ON b2.merchant_token = tt.merchant_token
+  AND TO_DATE(tt.second_sub_milestone_event_date) <= DATEADD(day, 60,TO_DATE(b2.EVENT_DATE))
+)t
+LEFT JOIN campaigns c 
+  ON t.merchant_token = c.natural_key_contact
+  AND c.first_impression_at >= t.first_sub_milestone_event_date
+  AND c.first_impression_at <= iff(t.second_sub_milestone_event_date IS NULL, DATEADD(day, 10,TO_DATE(t.first_sub_milestone_event_date)),t.second_sub_milestone_event_date)
+GROUP BY 1,2,3,4,5,6,7
+),
+
+bof_adopt AS(
+SELECT 
+    t.merchant_token,
+    t.event_date,
+    t.first_sub_milestone_event_date,
+    t.bof_1_hit_time,
+    t.bof_1_number_of_received_engagement,
+    t.bof_1_number_of_openned_engagement,
+    t.second_sub_milestone_event_date,
+    t.bof_2_hit_time,
+    t.bof_2_number_of_received_engagement,
+    t.bof_2_number_of_openned_engagement,
+    MIN(milestone_event_date) AS third_sub_milestone_event_date,
+    MIN(ABS(DATEDIFF(day,t.milestone_event_date,t.second_sub_milestone_event_date))) AS bof_3_hit_time,
+    COUNT(DISTINCT c.natural_key_campaign) AS bof_3_number_of_received_engagement,
+    COUNT(DISTINCT c.first_open_at) AS bof_3_number_of_openned_engagement
+FROM
+(SELECT 
+    b234.*,
+    tt.milestone_event_date    
+From bof_1_2 b234 
+LEFT JOIN adoption tt 
+  ON b234.merchant_token = tt.merchant_token
+  AND TO_DATE(tt.milestone_event_date) <= DATEADD(day, 60,TO_DATE(b234.EVENT_DATE))
+)t
+LEFT JOIN campaigns c 
+  ON t.merchant_token = c.natural_key_contact
+  AND c.first_impression_at >= t.second_sub_milestone_event_date
+  AND c.first_impression_at <= iff(t.milestone_event_date IS NULL, DATEADD(day, 10,TO_DATE(t.second_sub_milestone_event_date)),t.milestone_event_date)
+GROUP BY 1,2,3,4,5,6,7,8,9,10
+)
+
+SELECT * FROM bof_adopt
+)
