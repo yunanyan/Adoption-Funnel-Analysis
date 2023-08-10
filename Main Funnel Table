@@ -31,7 +31,7 @@ campaigns AS(
 SELECT
     aep.natural_key_contact,
     aep.natural_key_campaign,
-    TO_DATE(aep.first_impression_at) AS first_impression_at,
+    aep.first_impression_at,
     aep.first_open_at,
     dtc.product_name,
     dtc.lifecycle_stage,
