@@ -1,0 +1,8 @@
+-- GPV Segment
+SELECT
+    f.merchant_token, 
+    merchant_segment
+FROM app_engage.app_engage_temp.loyalty_funnel f
+LEFT JOIN app_bi.hexagon.vdim_merchant_gpv_segment s 
+  ON f.merchant_token = s.merchant_token 
+  AND f.event_date BETWEEN effective_begin AND effective_end
