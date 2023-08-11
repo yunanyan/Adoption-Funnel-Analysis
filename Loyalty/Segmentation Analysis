@@ -1,3 +1,4 @@
+
 -- GPV Segment
 SELECT
     f.merchant_token, 
@@ -6,3 +7,30 @@ FROM app_engage.app_engage_temp.loyalty_funnel f
 LEFT JOIN app_bi.hexagon.vdim_merchant_gpv_segment s 
   ON f.merchant_token = s.merchant_token 
   AND f.event_date BETWEEN effective_begin AND effective_end
+
+-- Country Segment
+SELECT
+    f.merchant_token, 
+    MIN(receipt_country_code) AS receipt_country_code
+    FROM app_engage.app_engage_temp.loyalty_funnel f
+LEFT JOIN app_bi.hexagon.vdim_user du 
+  ON f.merchant_token = du.merchant_token
+GROUP BY 1
+
+-- MCC Segment
+SELECT
+    merchant_token,
+    MIN(merchant_business_category) AS mcc
+FROM
+(SELECT 
+    f.merchant_token, 
+    merchant_business_category,
+    ROW_NUMBER()over(PARTITION BY du.merchant_token ORDER BY user_created_at DESC) AS myrank    
+FROM app_engage.app_engage_temp.loyalty_funnel f
+LEFT JOIN app_bi.hexagon.vdim_user du 
+  ON f.merchant_token = du.merchant_token)
+WHERE myrank=1 
+GROUP BY 1
+
+
+
