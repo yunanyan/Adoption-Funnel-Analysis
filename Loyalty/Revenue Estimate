@@ -1,0 +1,34 @@
+WITH Loyalty AS (
+SELECT
+    merchant_token,
+    report_date,
+    product_name,
+    revenue_gross_fxd_usd_amortized
+FROM app_bi.hexagon.vagg_daily_subscriptions_summary  
+WHERE product_name = 'Loyalty'
+),
+
+rev AS(
+SELECT
+    f.merchant_token, 
+    merchant_segment,
+    l.report_date,
+    l.revenue_gross_fxd_usd_amortized
+FROM app_engage.app_engage_temp.funnel f
+LEFT JOIN app_bi.hexagon.vdim_merchant_gpv_segment s 
+  ON f.merchant_token = s.merchant_token 
+  AND f.event_date BETWEEN effective_begin AND effective_end
+LEFT JOIN Loyalty l 
+  ON f.merchant_token = l.merchant_token
+  AND l.report_date >= f.third_sub_milestone_event_date 
+  AND l.report_date <= DATEADD(day, 365,TO_DATE(f.third_sub_milestone_event_date))
+)
+
+SELECT
+    COUNT(DISTINCT merchant_token),
+    SUM(revenue_gross_fxd_usd_amortized),
+    SUM(revenue_gross_fxd_usd_amortized)/COUNT(DISTINCT merchant_token) AS avg_per_seg,
+    merchant_segment
+FROM rev
+WHERE report_date IS NOT null
+GROUP BY merchant_segment
