@@ -4,7 +4,7 @@ SELECT
     merchant_token,
     report_date,
     product_name,
-    adjusted_revenue_base_unit
+    adjusted_revenue_fxd_usd
 FROM app_bi.hexagon.vagg_daily_processing_summary 
 WHERE product_name = 'Register POS'
 ),
@@ -15,7 +15,7 @@ SELECT
     f.merchant_token, 
     merchant_segment,
     SPOS.report_date,
-    SPOS.adjusted_revenue_base_unit
+    SPOS.adjusted_revenue_fxd_usd
 FROM app_engage.app_engage_temp.funnel f
 LEFT JOIN app_bi.hexagon.vdim_merchant_gpv_segment s 
   ON f.merchant_token = s.merchant_token 
@@ -29,8 +29,8 @@ LEFT JOIN SPOS
 -- Calculate average revenue per seller for each segment
 SELECT
     COUNT(DISTINCT merchant_token),
-    SUM(adjusted_revenue_base_unit/100),
-    SUM(adjusted_revenue_base_unit/100)/COUNT(DISTINCT merchant_token) AS avg_per_seg,
+    SUM(adjusted_revenue_fxd_usd),
+    SUM(adjusted_revenue_fxd_usd)/COUNT(DISTINCT merchant_token) AS avg_per_seg,
     merchant_segment
 FROM rev
 WHERE report_date IS NOT null
