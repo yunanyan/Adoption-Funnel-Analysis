@@ -1,5 +1,5 @@
 CREATE OR REPLACE TABLE app_engage.app_engage_temp.funnel AS(
-WTIH base AS (
+WITH base AS (
     SELECT
         pe.merchant_token
         ,pe.product_name
